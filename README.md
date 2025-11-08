@@ -1,0 +1,5 @@
+# TODO:
+# API
+# CRUD
+# LOGGER
+# FRONTEND
