@@ -1,155 +1,476 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Numeric, Date, Boolean, UniqueConstraint, CheckConstraint, Index
+"""
+SQLAlchemy ORM Models for Retail Management System (Type-Safe Version)
+
+This module defines the database schema for a multi-store retail system including:
+- Product catalog and pricing
+- Inventory management across stores
+- Transaction processing
+- Customer accounts
+- Employee management
+
+All models use UUID primary keys and timezone-aware timestamps.
+This version uses SQLAlchemy expression language for type-safe constraints.
+"""
+
+from sqlalchemy import (
+    Column, Integer, String, DateTime, ForeignKey, Numeric, Date, Boolean,
+    UniqueConstraint, CheckConstraint, Index, text, and_, or_
+)
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import Base
 from datetime import datetime, timezone
+import uuid
+
 
 class Product(Base):
+    """
+    Product master table containing SKU, name, and base pricing information.
+    
+    Relationships:
+        - price_history: Historical and current pricing records
+        - inventory_items: Stock levels across all stores
+        - transaction_items: Sales history
+        - inventory_movements: Stock movement tracking
+    """
+    
     __tablename__ = 'products'
     
-    id = Column(Integer, primary_key=True)
+    # Primary key
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # Required fields
     sku = Column(String(50), unique=True, nullable=False, index=True)
     name = Column(String(255), nullable=False)
     base_price = Column(Numeric(10, 2), nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
+    # Status fields
+    is_active = Column(Boolean, default=True, nullable=False)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), 
+                       onupdate=lambda: datetime.now(timezone.utc))
+    
+    # Constraints
     __table_args__ = (
-        CheckConstraint('base_price > 0', name='check_product_base_price_positive'),
+        CheckConstraint(text('base_price > 0'), name='check_product_base_price_positive'),
     )
     
-    price_history = relationship('ProductPrice', back_populates='product')
-    inventory_items = relationship('Store_Inventory', back_populates='product')
-    transaction_items = relationship('Transaction_Item', back_populates='product')
+    # Relationships
+    price_history = relationship('ProductPrice', back_populates='product', cascade='all, delete-orphan')
+    inventory_items = relationship('StoreInventory', back_populates='product')
+    transaction_items = relationship('TransactionItem', back_populates='product')
+    inventory_movements = relationship('InventoryMovement', back_populates='product')
+    
+    def __repr__(self) -> str:
+        return f"<Product(id={self.id}, sku='{self.sku}', name='{self.name}')>"
+
 
 class ProductPrice(Base):
+    """
+    Historical and current pricing records for products.
+    Supports discount tracking and effective date ranges.
+    """
+    
     __tablename__ = 'product_prices'
     
-    id = Column(Integer, primary_key=True)
-    product_id = Column(Integer, ForeignKey('products.id'), nullable=False, index=True)
+    # Primary key
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # Foreign keys
+    product_id = Column(UUID(as_uuid=True), ForeignKey('products.id', ondelete='CASCADE'), 
+                       nullable=False, index=True)
+    
+    # Required fields
     current_price = Column(Numeric(10, 2), nullable=False)
-    discount_percent = Column(Numeric(5, 2), nullable=True)
     effective_date = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    end_date = Column(DateTime, nullable=True)
+    
+    # Optional fields
+    discount_percent = Column(Numeric(5, 2), nullable=True)
+    end_date = Column(DateTime(timezone=True), nullable=True)
+    
+    # Timestamps
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
+    # Constraints
     __table_args__ = (
-        CheckConstraint('current_price > 0', name='check_price_positive'),
-        CheckConstraint('discount_percent >= 0 AND discount_percent <= 100', name='check_discount_percent_range'),
+        CheckConstraint(text('current_price > 0'), name='check_price_positive'),
+        CheckConstraint(text('discount_percent >= 0 AND discount_percent <= 100'), 
+                       name='check_discount_percent_range'),
+        CheckConstraint(text('end_date IS NULL OR end_date > effective_date'), 
+                       name='check_price_date_range'),
+        Index('idx_product_price_effective', 'product_id', 'effective_date'),
     )
     
+    # Relationships
     product = relationship('Product', back_populates='price_history')
+    
+    def __repr__(self) -> str:
+        return f"<ProductPrice(id={self.id}, product_id={self.product_id}, price={self.current_price})>"
 
-class Transaction_Item(Base):
-    __tablename__ = 'transaction_items'
+
+class Customer(Base):
+    """
+    Customer records supporting both registered and anonymous customers.
     
-    id = Column(Integer, primary_key=True)
-    transaction_id = Column(Integer, ForeignKey('transactions.id'), nullable=False, index=True)
-    product_id = Column(Integer, ForeignKey('products.id'), nullable=False, index=True)
-    quantity = Column(Integer, nullable=False)
-    price = Column(Numeric(10, 2), nullable=False)  # Price at time of purchase
+    Relationships:
+        - account: One-to-one with CustomerAccount for registered users
+        - transactions: Purchase history
+    """
     
+    __tablename__ = 'customers'
+    
+    # Primary key
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # Optional fields (nullable for anonymous customers)
+    first_name = Column(String(255), nullable=True)
+    last_name = Column(String(255), nullable=True)
+    
+    # Status fields
+    is_registered = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), 
+                       onupdate=lambda: datetime.now(timezone.utc))
+    
+    # Relationships
+    account = relationship('CustomerAccount', back_populates='customer', uselist=False, 
+                          cascade='all, delete-orphan')
+    transactions = relationship('Transaction', back_populates='customer')
+    
+    def __repr__(self) -> str:
+        name = f"{self.first_name} {self.last_name}" if self.first_name else "Anonymous"
+        return f"<Customer(id={self.id}, name='{name}', registered={self.is_registered})>"
+
+
+class CustomerAccount(Base):
+    """
+    Authentication and contact information for registered customers.
+    One-to-one relationship with Customer.
+    """
+    
+    __tablename__ = 'customer_accounts'
+    
+    # Primary key
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # Foreign keys
+    customer_id = Column(UUID(as_uuid=True), ForeignKey('customers.id', ondelete='CASCADE'), 
+                        unique=True, nullable=False)
+    
+    # Required fields
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    
+    # Optional fields
+    phone_number = Column(String(15), nullable=True)
+    
+    # Status fields
+    is_active = Column(Boolean, default=True, nullable=False)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), 
+                       onupdate=lambda: datetime.now(timezone.utc))
+    
+    # Constraints
     __table_args__ = (
-        CheckConstraint('quantity > 0', name='check_transaction_item_quantity_positive'),
-        CheckConstraint('price > 0', name='check_transaction_item_price_positive'),
+        CheckConstraint(text("email LIKE '%@%'"), name='check_email_format'),
     )
     
-    transaction = relationship('Transaction', back_populates='items')
-    product = relationship('Product', back_populates='transaction_items')
+    # Relationships
+    customer = relationship('Customer', back_populates='account')
+    
+    def __repr__(self) -> str:
+        return f"<CustomerAccount(id={self.id}, email='{self.email}', active={self.is_active})>"
+
+
+class Store(Base):
+    """
+    Physical store locations.
+    
+    Relationships:
+        - inventory: Products stocked at this store
+        - transactions: Sales processed at this store
+        - employees: Staff assigned to this store
+        - inventory_movements: Stock movements for this store
+    """
+    
+    __tablename__ = 'stores'
+    
+    # Primary key
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # Required fields
+    name = Column(String(255), nullable=False)
+    
+    # Optional fields
+    address = Column(String(500), nullable=True)
+    
+    # Status fields
+    is_active = Column(Boolean, default=True, nullable=False)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), 
+                       onupdate=lambda: datetime.now(timezone.utc))
+    
+    # Relationships
+    inventory = relationship('StoreInventory', back_populates='store', cascade='all, delete-orphan')
+    transactions = relationship('Transaction', back_populates='store')
+    employees = relationship('Employee', back_populates='store')
+    inventory_movements = relationship('InventoryMovement', back_populates='store')
+    
+    def __repr__(self) -> str:
+        return f"<Store(id={self.id}, name='{self.name}', active={self.is_active})>"
+
+
+class StoreInventory(Base):
+    """
+    Current inventory levels for products at each store.
+    Tracks quantity, costs, and optional store-specific pricing.
+    """
+    
+    __tablename__ = 'store_inventories'
+    
+    # Primary key
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # Foreign keys
+    store_id = Column(UUID(as_uuid=True), ForeignKey('stores.id', ondelete='CASCADE'), 
+                     nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey('products.id', ondelete='RESTRICT'), 
+                       nullable=False, index=True)
+    
+    # Required fields
+    quantity_balance = Column(Integer, nullable=False, default=0)
+    unit_cost = Column(Numeric(10, 2), nullable=False)
+    total_cost = Column(Numeric(10, 2), nullable=False)
+    
+    # Optional fields
+    current_price = Column(Numeric(10, 2), nullable=True)  # Store-specific price override
+    
+    # Timestamps
+    last_updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), 
+                            onupdate=lambda: datetime.now(timezone.utc))
+    
+    # Constraints
+    __table_args__ = (
+        UniqueConstraint('store_id', 'product_id', name='uq_store_product'),
+        CheckConstraint(text('quantity_balance >= 0'), name='check_inventory_quantity_non_negative'),
+        CheckConstraint(text('current_price IS NULL OR current_price > 0'), 
+                       name='check_inventory_price_positive'),
+        CheckConstraint(text('unit_cost > 0'), name='check_unit_cost_positive'),
+        CheckConstraint(text('total_cost >= 0'), name='check_total_cost_non_negative'),
+        Index('idx_store_inventory_product', 'product_id', 'store_id'),
+    )
+    
+    # Relationships
+    store = relationship('Store', back_populates='inventory')
+    product = relationship('Product', back_populates='inventory_items')
+    
+    def __repr__(self) -> str:
+        return f"<StoreInventory(store_id={self.store_id}, product_id={self.product_id}, quantity={self.quantity_balance})>"
+
+
+class InventoryMovement(Base):
+    """
+    Audit trail for all inventory changes.
+    Tracks purchases, sales, adjustments, returns, and transfers.
+    """
+    
+    __tablename__ = 'inventory_movements'
+    
+    # Primary key
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # Foreign keys
+    store_id = Column(UUID(as_uuid=True), ForeignKey('stores.id', ondelete='RESTRICT'), 
+                     nullable=False)
+    product_id = Column(UUID(as_uuid=True), ForeignKey('products.id', ondelete='RESTRICT'), 
+                       nullable=False)
+    
+    # Required fields
+    quantity_change = Column(Integer, nullable=False)
+    unit_cost = Column(Numeric(10, 2), nullable=False)
+    movement_type = Column(String(50), nullable=False)
+    
+    # Optional fields
+    reference_id = Column(UUID(as_uuid=True), nullable=True)  # Link to transaction_id if applicable
+    notes = Column(String(500), nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    
+    # Constraints
+    __table_args__ = (
+        CheckConstraint(text('quantity_change != 0'), name='check_quantity_change_not_zero'),
+        CheckConstraint(text('unit_cost > 0'), name='check_movement_unit_cost_positive'),
+        CheckConstraint(
+            text("movement_type IN ('purchase', 'sale', 'adjustment', 'return', 'transfer')"),
+            name='check_valid_movement_type'
+        ),
+        Index('idx_inventory_movement_store_product', 'store_id', 'product_id'),
+        Index('idx_inventory_movement_created', 'created_at'),
+        Index('idx_inventory_movement_reference', 'reference_id'),
+    )
+    
+    # Relationships
+    store = relationship('Store', back_populates='inventory_movements')
+    product = relationship('Product', back_populates='inventory_movements')
+    
+    def __repr__(self) -> str:
+        return f"<InventoryMovement(id={self.id}, type='{self.movement_type}', quantity={self.quantity_change})>"
+
+
+class Employee(Base):
+    """
+    Employee records with store assignment and employment dates.
+    
+    Relationships:
+        - store: Store where employee is assigned
+        - transactions: Transactions processed by this employee
+    """
+    
+    __tablename__ = 'employees'
+    
+    # Primary key
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # Required fields
+    first_name = Column(String(255), nullable=False)
+    last_name = Column(String(255), nullable=False)
+    
+    # Optional fields
+    dob = Column(Date, nullable=True)
+    hire_date = Column(Date, nullable=True)
+    
+    # Foreign keys
+    store_id = Column(UUID(as_uuid=True), ForeignKey('stores.id', ondelete='SET NULL'), 
+                     nullable=True, index=True)
+    
+    # Status fields
+    is_active = Column(Boolean, default=True, nullable=False)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), 
+                       onupdate=lambda: datetime.now(timezone.utc))
+    
+    # Constraints - using text() to avoid Pylance type checking issues
+    __table_args__ = (
+        CheckConstraint(
+            text('hire_date IS NULL OR dob IS NULL OR hire_date >= dob'),
+            name='check_hire_after_birth'
+        ),
+        CheckConstraint(
+            text('dob IS NULL OR dob < CURRENT_DATE'),
+            name='check_dob_in_past'
+        ),
+    )
+    
+    # Relationships
+    store = relationship('Store', back_populates='employees')
+    transactions = relationship('Transaction', back_populates='employee')
+    
+    def __repr__(self) -> str:
+        return f"<Employee(id={self.id}, name='{self.first_name} {self.last_name}', active={self.is_active})>"
+
 
 class Transaction(Base):
+    """
+    Sales transactions processed at stores.
+    
+    Relationships:
+        - items: Line items (products and quantities)
+        - customer: Customer who made the purchase (optional for anonymous)
+        - store: Store where transaction occurred
+        - employee: Employee who processed the transaction
+    """
+    
     __tablename__ = 'transactions'
     
-    id = Column(Integer, primary_key=True)
-    customer_id = Column(Integer, ForeignKey('customers.id'), nullable=True, index=True)  # Nullable for anonymous customers
-    store_id = Column(Integer, ForeignKey('stores.id'), nullable=False, index=True)
-    employee_id = Column(Integer, ForeignKey('employees.id'), nullable=False, index=True)
-    total_amount = Column(Numeric(10, 2), nullable=False)  # Total transaction amount
-    date_created = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    # Primary key
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
+    # Foreign keys
+    customer_id = Column(UUID(as_uuid=True), ForeignKey('customers.id', ondelete='SET NULL'), 
+                        nullable=True, index=True)  # Nullable for anonymous customers
+    store_id = Column(UUID(as_uuid=True), ForeignKey('stores.id', ondelete='RESTRICT'), 
+                     nullable=False, index=True)
+    employee_id = Column(UUID(as_uuid=True), ForeignKey('employees.id', ondelete='RESTRICT'), 
+                        nullable=False, index=True)
+    
+    # Required fields
+    total_amount = Column(Numeric(10, 2), nullable=False)
+    status = Column(String(20), default='completed', nullable=False)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), 
+                       index=True)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), 
+                       onupdate=lambda: datetime.now(timezone.utc))
+    
+    # Constraints
     __table_args__ = (
-        CheckConstraint('total_amount >= 0', name='check_total_amount_non_negative'),
+        CheckConstraint(text('total_amount >= 0'), name='check_total_amount_non_negative'),
+        CheckConstraint(
+            text("status IN ('pending', 'completed', 'refunded', 'cancelled')"),
+            name='check_valid_status'
+        ),
+        Index('idx_transaction_store_date', 'store_id', 'created_at'),
+        Index('idx_transaction_customer_date', 'customer_id', 'created_at'),
     )
     
-    items = relationship('Transaction_Item', back_populates='transaction')
+    # Relationships
+    items = relationship('TransactionItem', back_populates='transaction', cascade='all, delete-orphan')
     customer = relationship('Customer', back_populates='transactions')
     store = relationship('Store', back_populates='transactions')
     employee = relationship('Employee', back_populates='transactions')
-
-class Customer(Base):
-    __tablename__ = 'customers'
     
-    id = Column(Integer, primary_key=True)
-    first_name = Column(String(255), nullable=True)
-    last_name = Column(String(255), nullable=True)
-    is_registered = Column(Boolean, default=False, nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False)
+    def __repr__(self) -> str:
+        return f"<Transaction(id={self.id}, total={self.total_amount}, status='{self.status}')>"
+
+
+class TransactionItem(Base):
+    """
+    Line items for transactions.
+    Captures product, quantity, and price at time of sale.
+    """
+    
+    __tablename__ = 'transaction_items'
+    
+    # Primary key
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # Foreign keys
+    transaction_id = Column(UUID(as_uuid=True), ForeignKey('transactions.id', ondelete='CASCADE'), 
+                           nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey('products.id', ondelete='RESTRICT'), 
+                       nullable=False, index=True)
+    
+    # Required fields
+    quantity = Column(Integer, nullable=False)
+    price = Column(Numeric(10, 2), nullable=False)  # Price at time of purchase
+    
+    # Timestamps
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
-    account = relationship('Customer_Account', back_populates='customer', uselist=False)  # uselist=False for 1-to-1
-    transactions = relationship('Transaction', back_populates='customer')
-
-class Customer_Account(Base):
-    __tablename__ = 'customer_accounts'
-    
-    id = Column(Integer, primary_key=True)
-    customer_id = Column(Integer, ForeignKey('customers.id'), unique=True, nullable=False)
-    email = Column(String(255), unique=True, nullable=False, index=True)
-    hashed_password = Column(String(255), nullable=False)
-    phone_number = Column(String(15), nullable=True)
-    is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
-    customer = relationship('Customer', back_populates='account')
-
-class Store(Base):
-    __tablename__ = 'stores'
-    
-    id = Column(Integer, primary_key=True)
-    name = Column(String(255), nullable=False)
-    address = Column(String(500), nullable=True)
-    is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
-    inventory = relationship('Store_Inventory', back_populates='store')
-    transactions = relationship('Transaction', back_populates='store')
-    employees = relationship('Employee', back_populates='store')
-
-class Store_Inventory(Base):
-    __tablename__ = 'store_inventories'
-    
-    id = Column(Integer, primary_key=True)
-    store_id = Column(Integer, ForeignKey('stores.id'), nullable=False, index=True)
-    product_id = Column(Integer, ForeignKey('products.id'), nullable=False, index=True)
-    quantity = Column(Integer, nullable=False, default=0)
-    current_price = Column(Numeric(10, 2), nullable=True)  # Store-specific price override
-    last_updated = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
+    # Constraints
     __table_args__ = (
-        UniqueConstraint('store_id', 'product_id', name='uq_store_product'),
-        CheckConstraint('quantity >= 0', name='check_inventory_quantity_non_negative'),
-        CheckConstraint('current_price IS NULL OR current_price > 0', name='check_inventory_price_positive'),
+        CheckConstraint(text('quantity > 0'), name='check_transaction_item_quantity_positive'),
+        CheckConstraint(text('price > 0'), name='check_transaction_item_price_positive'),
+        Index('idx_transaction_item_product', 'product_id', 'transaction_id'),
     )
     
-    store = relationship('Store', back_populates='inventory')
-    product = relationship('Product', back_populates='inventory_items')
-
-class Employee(Base):
-    __tablename__ = 'employees'
+    # Relationships
+    transaction = relationship('Transaction', back_populates='items')
+    product = relationship('Product', back_populates='transaction_items')
     
-    id = Column(Integer, primary_key=True)
-    first_name = Column(String(255), nullable=False)
-    last_name = Column(String(255), nullable=False)
-    dob = Column(Date, nullable=True)
-    store_id = Column(Integer, ForeignKey('stores.id'), nullable=True, index=True)
-    hire_date = Column(Date, nullable=True)
-    is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
-    transactions = relationship('Transaction', back_populates='employee')
-    store = relationship('Store', back_populates='employees')
+    def __repr__(self) -> str:
+        return f"<TransactionItem(id={self.id}, product_id={self.product_id}, quantity={self.quantity}, price={self.price})>"
