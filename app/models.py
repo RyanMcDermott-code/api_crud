@@ -143,7 +143,7 @@ class Customer(Base):
     transactions = relationship('Transaction', back_populates='customer')
     
     def __repr__(self) -> str:
-        name = f"{self.first_name} {self.last_name}" if self.first_name else "Anonymous"
+        name = f"{self.first_name} {self.last_name}" if self.first_name is not None else "Anonymous"
         return f"<Customer(id={self.id}, name='{name}', registered={self.is_registered})>"
 
 
