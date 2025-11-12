@@ -7,7 +7,7 @@ DATABASE_URL = "sqlite:///./app.db"
 
 engine = create_engine(
     DATABASE_URL,
-    conntect_args={"check_same_thread": False}, # Needed for SQLite
+    connect_args={"check_same_thread": False}, # Needed for SQLite
     echo=False # Set True for logging SQL debugging 
 )
 
@@ -18,9 +18,11 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # Thread-safe session
 ScopedSession = scoped_session(SessionLocal)
 
-# Base class for models
-Base = declarative_base()
+# Create base and inherit from it
+_Base = declarative_base()
 
+class Base(_Base):  # type: ignore
+    __abstract__ = True
 
 def init_db():
     """Initialize database tables"""
