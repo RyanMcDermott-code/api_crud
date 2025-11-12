@@ -105,9 +105,8 @@ class BaseRepository(Generic[ModelType]):
     
     def exists(self, db: Session, id: UUID) -> bool:
         """Check if a record exists by ID."""
-        stmt = select(func.count()).select_from(self.model).where(self.model.id == id)
-        return db.scalar(stmt) > 0
-    
+        return db.get(self.model, id) is not None
+        
     def count(self, db: Session, **filters) -> int:
         """Count records matching filters."""
         stmt = select(func.count()).select_from(self.model).filter_by(**filters)
