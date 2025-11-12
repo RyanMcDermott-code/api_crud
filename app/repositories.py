@@ -1,23 +1,19 @@
-from typing import Generic, TypeVar, Type, Optional, List
+from typing import Generic, TypeVar, Type, Optional, List, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, Select, func, and_
 from pydantic import BaseModel
 from uuid import UUID
 from app.database import Base
 
 ModelType = TypeVar('ModelType', bound=Base)
-CreateSchemaType = TypeVar('CreateSchemaType', bound=BaseModel)
-UpdateSchemaType = TypeVar('UpdateSchemaType', bound=BaseModel)
 
 
-class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
+class BaseRepository(Generic[ModelType]):
     """
-    Base repository providing CRUD operations for SQLAlchemy models.
+    Base repository providing CRUD and query operations for SQLAlchemy models.
     
     Type Parameters:
         ModelType: SQLAlchemy model class
-        CreateSchemaType: Pydantic schema for creation
-        UpdateSchemaType: Pydantic schema for updates
     """
     
     def __init__(self, model: Type[ModelType]):
@@ -29,17 +25,10 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         """
         self.model = model
     
+    # Basic CRUD
+    
     def get(self, db: Session, id: UUID) -> Optional[ModelType]:
-        """
-        Retrieve a single record by ID.
-        
-        Args:
-            db: Database session
-            id: Record UUID
-            
-        Returns:
-            Model instance if found, None otherwise
-        """
+        """Retrieve a single record by ID."""
         return db.get(self.model, id)
     
     def get_multi(
@@ -49,32 +38,17 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         skip: int = 0, 
         limit: int = 100
     ) -> List[ModelType]:
-        """
-        Retrieve multiple records with pagination.
-        
-        Args:
-            db: Database session
-            skip: Number of records to skip
-            limit: Maximum number of records to return
-            
-        Returns:
-            List of model instances
-        """
+        """Retrieve multiple records with pagination."""
         stmt = select(self.model).offset(skip).limit(limit)
         return list(db.scalars(stmt).all())
     
-    def create(self, db: Session, *, obj_in: CreateSchemaType) -> ModelType:
-        """
-        Create a new record.
+    def create(self, db: Session, *, obj_in: BaseModel | Dict[str, Any]) -> ModelType:
+        """Create a new record from Pydantic model or dict."""
+        if isinstance(obj_in, dict):
+            obj_in_data = obj_in
+        else:
+            obj_in_data = obj_in.model_dump()
         
-        Args:
-            db: Database session
-            obj_in: Pydantic schema with creation data
-            
-        Returns:
-            Created model instance
-        """
-        obj_in_data = obj_in.model_dump()
         db_obj = self.model(**obj_in_data)
         db.add(db_obj)
         db.commit()
@@ -86,20 +60,14 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         db: Session, 
         *, 
         db_obj: ModelType, 
-        obj_in: UpdateSchemaType
+        obj_in: BaseModel | Dict[str, Any]
     ) -> ModelType:
-        """
-        Update an existing record.
+        """Update an existing record from Pydantic model or dict."""
+        if isinstance(obj_in, dict):
+            update_data = obj_in
+        else:
+            update_data = obj_in.model_dump(exclude_unset=True)
         
-        Args:
-            db: Database session
-            db_obj: Existing model instance to update
-            obj_in: Pydantic schema with update data
-            
-        Returns:
-            Updated model instance
-        """
-        update_data = obj_in.model_dump(exclude_unset=True)
         for field, value in update_data.items():
             setattr(db_obj, field, value)
         
@@ -109,18 +77,57 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         return db_obj
     
     def delete(self, db: Session, *, id: UUID) -> Optional[ModelType]:
-        """
-        Delete a record by ID.
-        
-        Args:
-            db: Database session
-            id: Record UUID to delete
-            
-        Returns:
-            Deleted model instance if found, None otherwise
-        """
+        """Hard delete a record by ID."""
         obj = db.get(self.model, id)
         if obj:
             db.delete(obj)
             db.commit()
+        return obj
+    
+    # Query helpers
+    
+    def get_by(self, db: Session, **filters) -> Optional[ModelType]:
+        """Get a single record by arbitrary filters."""
+        stmt = select(self.model).filter_by(**filters)
+        return db.scalars(stmt).first()
+    
+    def get_multi_by(
+        self,
+        db: Session,
+        *,
+        skip: int = 0,
+        limit: int = 100,
+        **filters
+    ) -> List[ModelType]:
+        """Get multiple records by arbitrary filters."""
+        stmt = select(self.model).filter_by(**filters).offset(skip).limit(limit)
+        return list(db.scalars(stmt).all())
+    
+    def exists(self, db: Session, id: UUID) -> bool:
+        """Check if a record exists by ID."""
+        stmt = select(func.count()).select_from(self.model).where(self.model.id == id)
+        return db.scalar(stmt) > 0
+    
+    def count(self, db: Session, **filters) -> int:
+        """Count records matching filters."""
+        stmt = select(func.count()).select_from(self.model).filter_by(**filters)
+        return db.scalar(stmt) or 0
+    
+    # Soft delete support (if model has is_active field)
+    
+    def soft_delete(self, db: Session, *, id: UUID) -> Optional[ModelType]:
+        """Soft delete by setting is_active=False."""
+        obj = db.get(self.model, id)
+        if obj and hasattr(obj, 'is_active'):
+            obj.is_active = False
+            db.add(obj)
+            db.commit()
+            db.refresh(obj)
+        return obj
+    
+    def get_active(self, db: Session, id: UUID) -> Optional[ModelType]:
+        """Get record by ID only if active."""
+        obj = db.get(self.model, id)
+        if obj and hasattr(obj, 'is_active') and not obj.is_active:
+            return None
         return obj
