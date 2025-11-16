@@ -1,6 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, DateTime, ForeignKey, Numeric, Date, Boolean,
-    UniqueConstraint, CheckConstraint, Index, text, and_, or_
+    Column, Integer, String, DateTime, ForeignKey, Numeric, CheckConstraint, Index, text
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
